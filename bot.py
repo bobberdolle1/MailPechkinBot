@@ -144,14 +144,18 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("❌ Отмена", callback_data="broadcast_cancel")]
         ]
         
-        preview_text = (
-            f"📢 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>\n\n"
-            f"👥 Получателей: {user_count}\n\n"
-            f"Подтвердите отправку:"
-        )
-        
         # Отправляем предпросмотр с той же медиа
         if photo_id:
+            # Показываем реальную подпись или сообщаем, что ее нет
+            caption_preview = caption if caption else "(без подписи)"
+            preview_text = (
+                f"📢 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>\n\n"
+                f"👥 Получателей: {user_count}\n"
+                f"{'='*30}\n\n"
+                f"{caption_preview}\n\n"
+                f"{'='*30}\n"
+                f"Подтвердите отправку:"
+            )
             await update.message.reply_photo(
                 photo=photo_id,
                 caption=preview_text,
@@ -159,6 +163,15 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         elif video_id:
+            caption_preview = caption if caption else "(без подписи)"
+            preview_text = (
+                f"📢 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>\n\n"
+                f"👥 Получателей: {user_count}\n"
+                f"{'='*30}\n\n"
+                f"{caption_preview}\n\n"
+                f"{'='*30}\n"
+                f"Подтвердите отправку:"
+            )
             await update.message.reply_video(
                 video=video_id,
                 caption=preview_text,
@@ -166,6 +179,15 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         elif document_id:
+            caption_preview = caption if caption else "(без подписи)"
+            preview_text = (
+                f"📢 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>\n\n"
+                f"👥 Получателей: {user_count}\n"
+                f"{'='*30}\n\n"
+                f"{caption_preview}\n\n"
+                f"{'='*30}\n"
+                f"Подтвердите отправку:"
+            )
             await update.message.reply_document(
                 document=document_id,
                 caption=preview_text,
@@ -193,6 +215,12 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
     
     return True
+
+
+async def handle_media_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик медиа-сообщений (фото, видео, документы)"""
+    # Проверяем, не ожидается ли рассылка
+    await handle_broadcast_message(update, context)
 
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1023,6 +1051,11 @@ def main():
     
     # Регистрируем обработчик текстовых сообщений (кнопок)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    
+    # Регистрируем обработчики медиа (для рассылки)
+    application.add_handler(MessageHandler(filters.PHOTO, handle_media_message))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_media_message))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_media_message))
     
     # Регистрируем callback-обработчики для Inline-кнопок
     application.add_handler(CallbackQueryHandler(read_message_callback, pattern="^read_"))
