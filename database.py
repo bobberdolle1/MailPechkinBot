@@ -48,6 +48,8 @@ class Database:
                     is_active BOOLEAN DEFAULT 1,
                     domain TEXT DEFAULT '1secmail.com',
                     provider TEXT DEFAULT '1SecMail',
+                    auth_token TEXT,
+                    auth_password TEXT,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             """)
@@ -113,7 +115,8 @@ class Database:
             """, (user_id, username, first_name, last_name))
             conn.commit()
     
-    def set_user_email(self, user_id: int, email: str, provider: str = "1SecMail"):
+    def set_user_email(self, user_id: int, email: str, provider: str = "1SecMail", 
+                      auth_token: str = None, auth_password: str = None):
         """
         Устанавливает новый активный email для пользователя
         Деактивирует предыдущий email
@@ -122,6 +125,8 @@ class Database:
             user_id: ID пользователя
             email: Email-адрес
             provider: Название провайдера, который создал email
+            auth_token: Токен авторизации (для Mail.tm, TempMail.lol)
+            auth_password: Пароль (для Mail.tm)
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -133,12 +138,12 @@ class Database:
                 WHERE user_id = ? AND is_active = 1
             """, (user_id,))
             
-            # Добавляем новый активный email с информацией о провайдере
+            # Добавляем новый активный email с информацией о провайдере и токенами
             domain = email.split("@")[1] if "@" in email else "unknown"
             cursor.execute("""
-                INSERT INTO user_emails (user_id, email, is_active, domain, provider)
-                VALUES (?, ?, 1, ?, ?)
-            """, (user_id, email, domain, provider))
+                INSERT INTO user_emails (user_id, email, is_active, domain, provider, auth_token, auth_password)
+                VALUES (?, ?, 1, ?, ?, ?, ?)
+            """, (user_id, email, domain, provider, auth_token, auth_password))
             
             conn.commit()
     
@@ -173,6 +178,24 @@ class Database:
             
             row = cursor.fetchone()
             return (row["email"], row["provider"]) if row else None
+    
+    def get_user_email_full_info(self, user_id: int) -> Optional[dict]:
+        """Получает полную информацию об активном email включая токены
+        
+        Returns:
+            Словарь с email, provider, auth_token, auth_password или None
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT email, provider, auth_token, auth_password FROM user_emails
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (user_id,))
+            
+            row = cursor.fetchone()
+            return dict(row) if row else None
     
     def delete_user_email(self, user_id: int):
         """Удаляет (деактивирует) текущий активный email пользователя"""

@@ -65,26 +65,43 @@ class ProviderManager:
         """Получает провайдер по имени"""
         return self._providers.get(name)
     
-    def get_provider_for_email(self, email: str) -> Optional[EmailProvider]:
-        """Получает провайдер, который создал указанный email"""
+    def get_provider_for_email(self, email: str, provider_name_from_db: str = None) -> Optional[EmailProvider]:
+        """Получает провайдер, который создал указанный email
+        
+        Args:
+            email: Email-адрес
+            provider_name_from_db: Имя провайдера из базы данных (приоритетный)
+        """
+        # Приоритет 1: Имя провайдера из базы данных
+        if provider_name_from_db:
+            provider = self._providers.get(provider_name_from_db)
+            if provider:
+                logger.info(f"Провайдер определен из БД: {provider_name_from_db}")
+                return provider
+        
+        # Приоритет 2: Сохраненная связь в памяти
         provider_name = self._email_to_provider.get(email)
         if provider_name:
             return self._providers.get(provider_name)
         
-        # Пытаемся определить по домену
+        # Приоритет 3: Пытаемся определить по домену
         if "@" in email:
             domain = email.split("@")[1]
             
             if domain in ["1secmail.com", "1secmail.org", "1secmail.net"]:
                 return self._providers.get("1SecMail")
-            elif "mail.tm" in domain:
-                return self._providers.get("Mail.tm")
             elif "tempmail.lol" in domain:
                 return self._providers.get("TempMail.lol")
+            # Для Mail.tm - любой другой домен, не подходящий под другие критерии
+            # (так как Mail.tm использует множество доменов)
+            else:
+                # По умолчанию пробуем Mail.tm
+                logger.info(f"Неизвестный домен {domain}, пробуем Mail.tm")
+                return self._providers.get("Mail.tm")
         
         return None
     
-    async def generate_email(self, preferred_provider: Optional[str] = None) -> tuple[str, str]:
+    async def generate_email(self, preferred_provider: Optional[str] = None) -> tuple[str, str, str, str]:
         """
         Генерирует новый email, пытаясь использовать разные провайдеры
         
@@ -92,7 +109,7 @@ class ProviderManager:
             preferred_provider: Предпочитаемый провайдер (опционально)
         
         Returns:
-            Кортеж (email, provider_name)
+            Кортеж (email, provider_name, auth_token, auth_password)
         """
         providers_to_try = []
         
@@ -115,14 +132,22 @@ class ProviderManager:
         for provider in providers_to_try:
             try:
                 logger.info(f"Пытаемся создать email через {provider.name}...")
-                email = await provider.generate_email()
+                result = await provider.generate_email()
+                
+                # Распаковываем результат в зависимости от провайдера
+                if provider.name == "1SecMail":
+                    email = result
+                    auth_token = None
+                    auth_password = None
+                else:
+                    email, auth_token, auth_password = result
                 
                 # Сохраняем связь email -> провайдер
                 self._email_to_provider[email] = provider.name
                 self._current_provider = provider
                 
                 logger.info(f"✅ Email успешно создан через {provider.name}: {email}")
-                return email, provider.name
+                return email, provider.name, auth_token, auth_password
                 
             except Exception as e:
                 logger.warning(f"❌ Провайдер {provider.name} не смог создать email: {e}")
@@ -133,17 +158,20 @@ class ProviderManager:
         # Если все провайдеры не сработали
         raise Exception(f"Не удалось создать email ни через один провайдер. Последняя ошибка: {last_error}")
     
-    async def get_messages(self, email: str) -> List[Dict]:
+    async def get_messages(self, email: str, auth_token: str = None, auth_password: str = None, provider_name: str = None) -> List[Dict]:
         """
         Получает список сообщений для email
         
         Args:
             email: Email-адрес
+            auth_token: Токен авторизации (если есть)
+            auth_password: Пароль (если есть)
+            provider_name: Имя провайдера из БД (если есть)
         
         Returns:
             Список сообщений
         """
-        provider = self.get_provider_for_email(email)
+        provider = self.get_provider_for_email(email, provider_name)
         
         if not provider:
             logger.error(f"Не найден провайдер для email: {email}")
@@ -154,6 +182,11 @@ class ProviderManager:
             # Пытаемся восстановить доступность
             provider.mark_available()
         
+        # Устанавливаем токены авторизации, если они есть
+        if auth_token and hasattr(provider, 'set_auth'):
+            provider.set_auth(auth_token, auth_password)
+            logger.info(f"Установлены токены авторизации для {provider.name}")
+        
         try:
             messages = await provider.get_messages(email)
             return messages
@@ -161,22 +194,29 @@ class ProviderManager:
             logger.error(f"Ошибка при получении сообщений через {provider.name}: {e}")
             return []
     
-    async def read_message(self, email: str, message_id: str) -> Optional[Dict]:
+    async def read_message(self, email: str, message_id: str, auth_token: str = None, auth_password: str = None, provider_name: str = None) -> Optional[Dict]:
         """
         Читает конкретное сообщение
         
         Args:
             email: Email-адрес
             message_id: ID сообщения
+            auth_token: Токен авторизации (если есть)
+            auth_password: Пароль (если есть)
+            provider_name: Имя провайдера из БД (если есть)
         
         Returns:
             Данные сообщения или None
         """
-        provider = self.get_provider_for_email(email)
+        provider = self.get_provider_for_email(email, provider_name)
         
         if not provider:
             logger.error(f"Не найден провайдер для email: {email}")
             return None
+        
+        # Устанавливаем токены авторизации, если они есть
+        if auth_token and hasattr(provider, 'set_auth'):
+            provider.set_auth(auth_token, auth_password)
         
         try:
             message = await provider.read_message(email, message_id)

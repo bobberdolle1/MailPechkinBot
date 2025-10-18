@@ -118,11 +118,11 @@ async def create_email_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             # Получаем предпочитаемый провайдер пользователя
             preferred_provider = db.get_user_preferred_provider(user_id)
             
-            # Генерируем email
-            email, provider_name = await provider_manager.generate_email(preferred_provider)
+            # Генерируем email с токенами
+            email, provider_name, auth_token, auth_password = await provider_manager.generate_email(preferred_provider)
             
-            # Сохраняем email с информацией о провайдере
-            db.set_user_email(user_id, email, provider_name)
+            # Сохраняем email с информацией о провайдере и токенами
+            db.set_user_email(user_id, email, provider_name, auth_token, auth_password)
             
             text = (
                 "✅ <b>Email успешно создан!</b>\n\n"
@@ -161,7 +161,13 @@ async def check_email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     try:
         async with ProviderManager() as provider_manager:
-            messages = await provider_manager.get_messages(email)
+            # Получаем полную информацию о email включая токены
+            email_info = db.get_user_email_full_info(user_id)
+            auth_token = email_info.get('auth_token') if email_info else None
+            auth_password = email_info.get('auth_password') if email_info else None
+            provider_name = email_info.get('provider') if email_info else None
+            
+            messages = await provider_manager.get_messages(email, auth_token, auth_password, provider_name)
             
             if not messages:
                 await msg.edit_text(
@@ -386,7 +392,13 @@ async def read_message_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     try:
         async with ProviderManager() as provider_manager:
-            message = await provider_manager.read_message(email, message_id)
+            # Получаем полную информацию о email включая токены
+            email_info = db.get_user_email_full_info(user_id)
+            auth_token = email_info.get('auth_token') if email_info else None
+            auth_password = email_info.get('auth_password') if email_info else None
+            provider_name = email_info.get('provider') if email_info else None
+            
+            message = await provider_manager.read_message(email, message_id, auth_token, auth_password, provider_name)
             
             if not message:
                 await query.edit_message_text("❌ Не удалось загрузить письмо.")
@@ -425,7 +437,13 @@ async def refresh_emails_callback(update: Update, context: ContextTypes.DEFAULT_
     
     try:
         async with ProviderManager() as provider_manager:
-            messages = await provider_manager.get_messages(email)
+            # Получаем полную информацию о email включая токены
+            email_info = db.get_user_email_full_info(user_id)
+            auth_token = email_info.get('auth_token') if email_info else None
+            auth_password = email_info.get('auth_password') if email_info else None
+            provider_name = email_info.get('provider') if email_info else None
+            
+            messages = await provider_manager.get_messages(email, auth_token, auth_password, provider_name)
             
             if not messages:
                 await query.edit_message_text(

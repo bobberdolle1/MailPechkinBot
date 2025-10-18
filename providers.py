@@ -163,8 +163,12 @@ class MailTmProvider(EmailProvider):
         self._current_email: Optional[str] = None
         self._current_password: Optional[str] = None
     
-    async def generate_email(self) -> str:
-        """Создает новый аккаунт на mail.tm"""
+    async def generate_email(self) -> tuple[str, str, str]:
+        """Создает новый аккаунт на mail.tm
+        
+        Returns:
+            Кортеж (email, token, password)
+        """
         try:
             # Получаем доступные домены
             domains = await self.get_domains()
@@ -198,7 +202,7 @@ class MailTmProvider(EmailProvider):
                     await self._get_token(email, password)
                     
                     logger.info(f"[{self.name}] Создан email: {email}")
-                    return email
+                    return email, self._token, password
                 else:
                     error_text = await response.text()
                     raise Exception(f"Ошибка создания аккаунта: {response.status} - {error_text}")
@@ -231,11 +235,25 @@ class MailTmProvider(EmailProvider):
             logger.error(f"[{self.name}] Ошибка получения токена: {e}")
             raise
     
+    def set_auth(self, token: str, password: str):
+        """Устанавливает данные авторизации из базы данных"""
+        self._token = token
+        self._current_password = password
+        logger.info(f"[{self.name}] Восстановлена авторизация из БД")
+    
     async def get_messages(self, email: str) -> List[Dict]:
         """Получает список сообщений"""
         try:
-            # Если это новый email, нужно восстановить сессию
-            if email != self._current_email or not self._token:
+            # Если нет токена, пытаемся получить его через пароль
+            if not self._token and self._current_password:
+                try:
+                    await self._get_token(email, self._current_password)
+                except Exception as e:
+                    logger.error(f"[{self.name}] Не удалось получить токен: {e}")
+                    return []
+            
+            # Если это новый email или нет токена
+            if not self._token:
                 logger.warning(f"[{self.name}] Нет активной сессии для {email}")
                 return []
             
@@ -332,8 +350,12 @@ class TempMailLolProvider(EmailProvider):
         self.name = "TempMail.lol"
         self._current_token: Optional[str] = None
     
-    async def generate_email(self) -> str:
-        """Генерирует email на tempmail.lol"""
+    async def generate_email(self) -> tuple[str, str, None]:
+        """Генерирует email на tempmail.lol
+        
+        Returns:
+            Кортеж (email, token, None)
+        """
         try:
             # Генерируем случайный токен для управления почтой
             token = self.generate_username(32)
@@ -348,13 +370,18 @@ class TempMailLolProvider(EmailProvider):
                     email = result.get("address")
                     self._current_token = result.get("token", token)
                     logger.info(f"[{self.name}] Создан email: {email}")
-                    return email
+                    return email, self._current_token, None
                 else:
                     raise Exception(f"Ошибка создания email: {response.status}")
                     
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка генерации email: {e}")
             raise
+    
+    def set_auth(self, token: str, password: str = None):
+        """Устанавливает токен авторизации из базы данных"""
+        self._current_token = token
+        logger.info(f"[{self.name}] Восстановлен токен из БД")
     
     async def get_messages(self, email: str) -> List[Dict]:
         """Получает список сообщений"""
