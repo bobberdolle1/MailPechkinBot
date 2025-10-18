@@ -23,6 +23,11 @@ wheels/
 .installed.cfg
 *.egg
 
+# Poetry
+poetry.lock
+.venv/
+*.toml.lock
+
 # Environment variables
 .env
 

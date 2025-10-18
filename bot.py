@@ -17,7 +17,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from dotenv import load_dotenv
 
-from tempmail import TempMail
+from provider_manager import ProviderManager
 from database import Database
 
 # Настройка логирования
@@ -39,7 +39,8 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("📧 Создать новую почту"), KeyboardButton("📬 Проверить почту")],
         [KeyboardButton("📮 Мой email"), KeyboardButton("🗑️ Удалить почту")],
-        [KeyboardButton("ℹ️ Информация"), KeyboardButton("❓ Помощь")]
+        [KeyboardButton("⚙️ Настройки"), KeyboardButton("ℹ️ Информация")],
+        [KeyboardButton("❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -89,6 +90,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif text == "🗑️ Удалить почту":
         await delete_email_handler(update, context)
     
+    elif text == "⚙️ Настройки":
+        await settings_handler(update, context)
+    
     elif text == "ℹ️ Информация":
         await info_handler(update, context)
     
@@ -110,13 +114,20 @@ async def create_email_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     msg = await update.message.reply_text("⏳ Генерирую новый email-адрес...")
     
     try:
-        async with TempMail() as temp_mail:
-            email = temp_mail.generate_email()
-            db.set_user_email(user_id, email)
+        async with ProviderManager() as provider_manager:
+            # Получаем предпочитаемый провайдер пользователя
+            preferred_provider = db.get_user_preferred_provider(user_id)
+            
+            # Генерируем email
+            email, provider_name = await provider_manager.generate_email(preferred_provider)
+            
+            # Сохраняем email с информацией о провайдере
+            db.set_user_email(user_id, email, provider_name)
             
             text = (
                 "✅ <b>Email успешно создан!</b>\n\n"
-                f"📧 Ваш адрес: <code>{email}</code>\n\n"
+                f"📧 Ваш адрес: <code>{email}</code>\n"
+                f"🔧 Провайдер: <b>{provider_name}</b>\n\n"
                 "Используйте этот адрес для регистрации на сайтах.\n"
                 "Нажмите на адрес, чтобы скопировать его.\n\n"
                 "Для проверки входящих писем нажмите кнопку «📬 Проверить почту»."
@@ -128,6 +139,7 @@ async def create_email_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Ошибка при создании email: {e}")
         await msg.edit_text(
             "❌ Произошла ошибка при создании email.\n"
+            f"Детали: {str(e)}\n\n"
             "Попробуйте еще раз, нажав кнопку «📧 Создать новую почту»."
         )
 
@@ -148,8 +160,8 @@ async def check_email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = await update.message.reply_text("⏳ Проверяю входящие письма...")
     
     try:
-        async with TempMail() as temp_mail:
-            messages = await temp_mail.get_messages(email)
+        async with ProviderManager() as provider_manager:
+            messages = await provider_manager.get_messages(email)
             
             if not messages:
                 await msg.edit_text(
@@ -176,9 +188,14 @@ async def check_email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             # Кнопка обновления
             keyboard.append([InlineKeyboardButton("🔄 Обновить список", callback_data="refresh_emails")])
             
+            # Получаем информацию о провайдере
+            email_with_provider = db.get_user_email_with_provider(user_id)
+            provider_name = email_with_provider[1] if email_with_provider else "Unknown"
+            
             text = (
                 f"📬 <b>Входящие письма: {len(messages)}</b>\n\n"
-                f"📧 Email: <code>{email}</code>\n\n"
+                f"📧 Email: <code>{email}</code>\n"
+                f"🔧 Провайдер: <b>{provider_name}</b>\n\n"
                 f"Нажмите на письмо для просмотра содержимого:"
             )
             
@@ -199,12 +216,14 @@ async def check_email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def my_email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик кнопки 'Мой email'"""
     user_id = update.effective_user.id
-    email = db.get_user_email(user_id)
+    email_with_provider = db.get_user_email_with_provider(user_id)
     
-    if email:
+    if email_with_provider:
+        email, provider = email_with_provider
         text = (
             f"📮 <b>Ваш текущий email:</b>\n\n"
-            f"<code>{email}</code>\n\n"
+            f"<code>{email}</code>\n"
+            f"🔧 Провайдер: <b>{provider}</b>\n\n"
             f"Нажмите на адрес для копирования.\n\n"
             f"Используйте этот адрес для регистрации на сайтах, "
             f"затем нажмите «📬 Проверить почту» для получения писем."
@@ -267,11 +286,13 @@ async def info_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ℹ️ <b>О боте</b>\n\n"
         "Этот бот позволяет создавать временные email-адреса "
         "для получения кодов подтверждения и регистрации на сайтах.\n\n"
-        "🔹 <b>Используется сервис:</b> 1secmail.com\n"
-        "🔹 <b>Доступные домены:</b>\n"
-        "  • 1secmail.com\n"
-        "  • 1secmail.org\n"
-        "  • 1secmail.net\n\n"
+        "🔹 <b>Поддерживаемые провайдеры:</b>\n"
+        "  • Mail.tm (приоритет 1 - самый надежный)\n"
+        "  • TempMail.lol (приоритет 2)\n"
+        "  • 1SecMail (приоритет 3)\n\n"
+        "🔄 <b>Автоматическое переключение:</b>\n"
+        "При недоступности одного сервиса бот автоматически\n"
+        "использует альтернативный провайдер.\n\n"
         f"📊 <b>Статистика бота:</b>\n"
         f"👥 Пользователей: {stats['total_users']}\n"
         f"📧 Всего email создано: {stats['total_emails']}\n"
@@ -289,6 +310,36 @@ async def info_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def settings_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки настроек"""
+    user_id = update.effective_user.id
+    current_provider = db.get_user_preferred_provider(user_id)
+    
+    # Создаем inline-кнопки для выбора провайдера
+    keyboard = [
+        [InlineKeyboardButton(f"{'✅' if current_provider == 'Mail.tm' else '⚪️'} Mail.tm (Приоритет 1)", callback_data="set_provider_Mail.tm")],
+        [InlineKeyboardButton(f"{'✅' if current_provider == 'TempMail.lol' else '⚪️'} TempMail.lol (Приоритет 2)", callback_data="set_provider_TempMail.lol")],
+        [InlineKeyboardButton(f"{'✅' if current_provider == '1SecMail' else '⚪️'} 1SecMail (Приоритет 3)", callback_data="set_provider_1SecMail")],
+        [InlineKeyboardButton("🔄 Авто (по приоритету)", callback_data="set_provider_auto")]
+    ]
+    
+    settings_text = (
+        "⚙️ <b>Настройки бота</b>\n\n"
+        f"<b>Текущий провайдер:</b> {current_provider or 'Авто'}\n\n"
+        "Выберите предпочитаемый провайдер для создания email-адресов:\n\n"
+        "• <b>Mail.tm</b> - самый надежный, поддерживает JWT авторизацию\n"
+        "• <b>TempMail.lol</b> - быстрый и стабильный сервис\n"
+        "• <b>1SecMail</b> - простой сервис, может блокировать письма от Yandex\n\n"
+        "При выборе 'Авто' бот будет автоматически использовать доступные провайдеры по приоритету."
+    )
+    
+    await update.message.reply_text(
+        settings_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик кнопки помощи"""
     help_text = (
@@ -298,7 +349,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3️⃣ Нажми <b>«📬 Проверить почту»</b> для получения писем\n"
         "4️⃣ Выбери нужное письмо из списка для просмотра содержимого\n\n"
         "📮 Кнопка <b>«Мой email»</b> показывает текущий активный адрес\n"
-        "🗑️ Кнопка <b>«Удалить почту»</b> удаляет текущий email\n\n"
+        "🗑️ Кнопка <b>«Удалить почту»</b> удаляет текущий email\n"
+        "⚙️ Кнопка <b>«Настройки»</b> позволяет выбрать провайдер\n\n"
         "⚠️ <b>Важно знать:</b>\n"
         "• Письма хранятся временно (несколько часов)\n"
         "• Один пользователь = один активный email\n"
@@ -320,7 +372,7 @@ async def read_message_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     
-    message_id = int(query.data.split("_")[1])
+    message_id = query.data.split("_")[1]
     user_id = update.effective_user.id
     email = db.get_user_email(user_id)
     
@@ -333,14 +385,14 @@ async def read_message_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text("⏳ Загружаю письмо...")
     
     try:
-        async with TempMail() as temp_mail:
-            message = await temp_mail.read_message(email, message_id)
+        async with ProviderManager() as provider_manager:
+            message = await provider_manager.read_message(email, message_id)
             
             if not message:
                 await query.edit_message_text("❌ Не удалось загрузить письмо.")
                 return
             
-            text = temp_mail.format_message_full(message)
+            text = provider_manager.format_message_full(message)
             
             keyboard = [
                 [InlineKeyboardButton("◀️ К списку писем", callback_data="refresh_emails")]
@@ -372,8 +424,8 @@ async def refresh_emails_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text("⏳ Проверяю входящие письма...")
     
     try:
-        async with TempMail() as temp_mail:
-            messages = await temp_mail.get_messages(email)
+        async with ProviderManager() as provider_manager:
+            messages = await provider_manager.get_messages(email)
             
             if not messages:
                 await query.edit_message_text(
@@ -397,9 +449,14 @@ async def refresh_emails_callback(update: Update, context: ContextTypes.DEFAULT_
             
             keyboard.append([InlineKeyboardButton("🔄 Обновить список", callback_data="refresh_emails")])
             
+            # Получаем информацию о провайдере
+            email_with_provider = db.get_user_email_with_provider(user_id)
+            provider_name = email_with_provider[1] if email_with_provider else "Unknown"
+            
             text = (
                 f"📬 <b>Входящие письма: {len(messages)}</b>\n\n"
-                f"📧 Email: <code>{email}</code>\n\n"
+                f"📧 Email: <code>{email}</code>\n"
+                f"🔧 Провайдер: <b>{provider_name}</b>\n\n"
                 f"Нажмите на письмо для просмотра:"
             )
             
@@ -440,6 +497,47 @@ async def cancel_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
+async def set_provider_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора провайдера"""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    provider = query.data.replace("set_provider_", "")
+    
+    if provider == "auto":
+        db.set_user_preferred_provider(user_id, None)
+        await query.answer("✅ Включен автоматический выбор провайдера")
+        provider_text = "Авто (по приоритету)"
+    else:
+        db.set_user_preferred_provider(user_id, provider)
+        await query.answer(f"✅ Провайдер изменен на {provider}")
+        provider_text = provider
+    
+    # Обновляем сообщение с настройками
+    keyboard = [
+        [InlineKeyboardButton(f"{'✅' if provider == 'Mail.tm' else '⚪️'} Mail.tm (Приоритет 1)", callback_data="set_provider_Mail.tm")],
+        [InlineKeyboardButton(f"{'✅' if provider == 'TempMail.lol' else '⚪️'} TempMail.lol (Приоритет 2)", callback_data="set_provider_TempMail.lol")],
+        [InlineKeyboardButton(f"{'✅' if provider == '1SecMail' else '⚪️'} 1SecMail (Приоритет 3)", callback_data="set_provider_1SecMail")],
+        [InlineKeyboardButton("🔄 Авто (по приоритету)", callback_data="set_provider_auto")]
+    ]
+    
+    settings_text = (
+        "⚙️ <b>Настройки бота</b>\n\n"
+        f"<b>Текущий провайдер:</b> {provider_text}\n\n"
+        "Выберите предпочитаемый провайдер для создания email-адресов:\n\n"
+        "• <b>Mail.tm</b> - самый надежный, поддерживает JWT авторизацию\n"
+        "• <b>TempMail.lol</b> - быстрый и стабильный сервис\n"
+        "• <b>1SecMail</b> - простой сервис, может блокировать письма от Yandex\n\n"
+        "При выборе 'Авто' бот будет автоматически использовать доступные провайдеры по приоритету."
+    )
+    
+    await query.edit_message_text(
+        settings_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
     logger.error(f"Произошла ошибка: {context.error}")
@@ -454,6 +552,17 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Главная функция запуска бота"""
+    import asyncio
+    import sys
+    
+    # Исправление для Python 3.14+: создаем event loop если его нет
+    if sys.version_info >= (3, 10):
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     
     if not token:
@@ -476,6 +585,7 @@ def main():
     application.add_handler(CallbackQueryHandler(refresh_emails_callback, pattern="^refresh_emails$"))
     application.add_handler(CallbackQueryHandler(confirm_delete_callback, pattern="^confirm_delete$"))
     application.add_handler(CallbackQueryHandler(cancel_delete_callback, pattern="^cancel_delete$"))
+    application.add_handler(CallbackQueryHandler(set_provider_callback, pattern="^set_provider_"))
     
     # Обработчик ошибок
     application.add_error_handler(error_handler)

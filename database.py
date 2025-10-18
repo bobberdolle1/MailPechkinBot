@@ -47,6 +47,7 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     is_active BOOLEAN DEFAULT 1,
                     domain TEXT DEFAULT '1secmail.com',
+                    provider TEXT DEFAULT '1SecMail',
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             """)
@@ -73,6 +74,7 @@ class Database:
                     auto_check BOOLEAN DEFAULT 0,
                     check_interval INTEGER DEFAULT 5,
                     preferred_domain TEXT DEFAULT '1secmail.com',
+                    preferred_provider TEXT DEFAULT 'Mail.tm',
                     language TEXT DEFAULT 'ru',
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
@@ -111,10 +113,15 @@ class Database:
             """, (user_id, username, first_name, last_name))
             conn.commit()
     
-    def set_user_email(self, user_id: int, email: str):
+    def set_user_email(self, user_id: int, email: str, provider: str = "1SecMail"):
         """
         Устанавливает новый активный email для пользователя
         Деактивирует предыдущий email
+        
+        Args:
+            user_id: ID пользователя
+            email: Email-адрес
+            provider: Название провайдера, который создал email
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -126,11 +133,12 @@ class Database:
                 WHERE user_id = ? AND is_active = 1
             """, (user_id,))
             
-            # Добавляем новый активный email
+            # Добавляем новый активный email с информацией о провайдере
+            domain = email.split("@")[1] if "@" in email else "unknown"
             cursor.execute("""
-                INSERT INTO user_emails (user_id, email, is_active)
-                VALUES (?, ?, 1)
-            """, (user_id, email))
+                INSERT INTO user_emails (user_id, email, is_active, domain, provider)
+                VALUES (?, ?, 1, ?, ?)
+            """, (user_id, email, domain, provider))
             
             conn.commit()
     
@@ -147,6 +155,24 @@ class Database:
             
             row = cursor.fetchone()
             return row["email"] if row else None
+    
+    def get_user_email_with_provider(self, user_id: int) -> Optional[tuple]:
+        """Получает текущий активный email пользователя вместе с провайдером
+        
+        Returns:
+            Кортеж (email, provider) или None
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT email, provider FROM user_emails
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (user_id,))
+            
+            row = cursor.fetchone()
+            return (row["email"], row["provider"]) if row else None
     
     def delete_user_email(self, user_id: int):
         """Удаляет (деактивирует) текущий активный email пользователя"""
@@ -252,6 +278,7 @@ class Database:
                     "auto_check": 0,
                     "check_interval": 5,
                     "preferred_domain": "1secmail.com",
+                    "preferred_provider": "Mail.tm",
                     "language": "ru"
                 }
     
@@ -266,6 +293,15 @@ class Database:
                 WHERE user_id = ?
             """, values)
             conn.commit()
+    
+    def get_user_preferred_provider(self, user_id: int) -> Optional[str]:
+        """Получает предпочитаемый провайдер пользователя из настроек"""
+        settings = self.get_user_settings(user_id)
+        return settings.get("preferred_provider")
+    
+    def set_user_preferred_provider(self, user_id: int, provider: str):
+        """Устанавливает предпочитаемый провайдер для пользователя"""
+        self.update_user_settings(user_id, preferred_provider=provider)
     
     def get_users_with_auto_check(self) -> list:
         """Получает всех пользователей с включенной автопроверкой"""
