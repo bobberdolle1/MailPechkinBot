@@ -53,8 +53,19 @@ class AdminPanel:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    async def broadcast_message(self, context: ContextTypes.DEFAULT_TYPE, message: str):
-        """Рассылка сообщения всем пользователям"""
+    async def broadcast_message(self, context: ContextTypes.DEFAULT_TYPE, message: str = None, 
+                               photo_id: str = None, video_id: str = None, 
+                               document_id: str = None, caption: str = None):
+        """Рассылка сообщения всем пользователям
+        
+        Args:
+            context: Контекст бота
+            message: Текстовое сообщение
+            photo_id: ID фотографии
+            video_id: ID видео
+            document_id: ID документа
+            caption: Подпись к медиа
+        """
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT user_id FROM users")
@@ -65,11 +76,33 @@ class AdminPanel:
         
         for user in users:
             try:
-                await context.bot.send_message(
-                    chat_id=user['user_id'],
-                    text=message,
-                    parse_mode=ParseMode.HTML
-                )
+                if photo_id:
+                    await context.bot.send_photo(
+                        chat_id=user['user_id'],
+                        photo=photo_id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML
+                    )
+                elif video_id:
+                    await context.bot.send_video(
+                        chat_id=user['user_id'],
+                        video=video_id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML
+                    )
+                elif document_id:
+                    await context.bot.send_document(
+                        chat_id=user['user_id'],
+                        document=document_id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=user['user_id'],
+                        text=message,
+                        parse_mode=ParseMode.HTML
+                    )
                 success += 1
             except Exception as e:
                 logger.error(f"Ошибка отправки пользователю {user['user_id']}: {e}")
